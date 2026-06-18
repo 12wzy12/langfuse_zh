@@ -1,0 +1,125 @@
+import { useEffect, useRef, useState } from "react";
+import { useI18n } from "@/src/features/i18n/I18nProvider";
+import { Button } from "@/src/components/ui/button";
+import { usePlaygroundContext } from "../context";
+import { ChatMessageRole, ChatMessageType } from "@langfuse/shared";
+import { BracesIcon, Check, Copy, Plus } from "lucide-react";
+import { ToolCallCard } from "@/src/components/ChatMessages/ToolCallCard";
+import { copyTextToClipboard } from "@/src/utils/clipboard";
+import { ThinkingBlock } from "@/src/components/trace/components/IOPreview/components/ThinkingBlock";
+
+export const GenerationOutput = () => {
+  const { t } = useI18n();
+  const [isCopied, setIsCopied] = useState(false);
+  const [isAdded, setIsAdded] = useState(false);
+  const [isJson, setIsJson] = useState(false);
+  const scrollAreaRef = useRef<HTMLDivElement | null>(null);
+  const { output, outputReasoning, outputJson, addMessage, outputToolCalls } =
+    usePlaygroundContext();
+
+  const handleCopy = () => {
+    setIsCopied(true);
+    const textToCopy = isJson ? outputJson : output;
+    copyTextToClipboard(textToCopy);
+    setTimeout(() => setIsCopied(false), 1000);
+  };
+
+  const handleAddAssistantMessage = () => {
+    setIsAdded(true);
+    if (outputToolCalls.length > 0) {
+      addMessage({
+        type: ChatMessageType.AssistantToolCall,
+        role: ChatMessageRole.Assistant,
+        content: output,
+        toolCalls: outputToolCalls,
+      });
+    } else {
+      addMessage({
+        type: ChatMessageType.AssistantText,
+        role: ChatMessageRole.Assistant,
+        content: output,
+      });
+    }
+    setTimeout(() => setIsAdded(false), 1000);
+  };
+
+  useEffect(() => {
+    if (scrollAreaRef.current) {
+      const scrollElement = scrollAreaRef.current;
+      scrollElement.scrollTop = scrollElement.scrollHeight;
+    }
+  }, [output]);
+
+  const checkIcon = <Check className="h-2 w-2" />;
+  const copyIcon = <Copy className="h-2 w-2" />;
+  const plusIcon = <Plus className="h-2 w-2" />;
+
+  const copyButton =
+    output || outputToolCalls.length ? (
+      <div className="absolute top-2 right-3 flex space-x-1 opacity-50">
+        <Button
+          size="icon"
+          variant={isJson ? "default" : "secondary"}
+          onClick={() => {
+            setIsJson((prev) => !prev);
+          }}
+          title={t("playground.messages.toggleJson")}
+        >
+          <BracesIcon size={15} />
+        </Button>
+
+        <Button
+          size="icon"
+          variant="secondary"
+          onClick={!isCopied ? handleCopy : undefined}
+          title={t("playground.messages.copyOutput")}
+        >
+          {isCopied ? checkIcon : copyIcon}
+        </Button>
+
+        <Button
+          className="flex items-center gap-1 p-0 px-1 whitespace-nowrap"
+          variant="secondary"
+          onClick={!isAdded ? handleAddAssistantMessage : undefined}
+          title={t("playground.messages.addAsAssistant")}
+          disabled={isAdded}
+        >
+          {isAdded ? checkIcon : plusIcon}
+          {t("playground.messages.addToMessages")}
+        </Button>
+      </div>
+    ) : null;
+
+  return (
+    <div className="relative h-full">
+      <div
+        className="bg-muted h-full overflow-auto rounded-lg"
+        ref={scrollAreaRef}
+      >
+        <div className="bg-muted sticky top-0 z-10 p-3">
+          <div className="flex w-full items-center">
+            {t("playground.messages.output")}
+            {copyButton}
+          </div>
+        </div>
+        <div className="px-4">
+          {outputReasoning && !isJson && (
+            <div className="-ml-1">
+              <ThinkingBlock content={outputReasoning} />
+            </div>
+          )}
+          <pre className="text-xs wrap-break-word whitespace-break-spaces">
+            {isJson ? outputJson : output}
+          </pre>
+          {outputToolCalls.length > 0
+            ? outputToolCalls.map((toolCall) => (
+                <div className="mt-4" key={toolCall.id}>
+                  <ToolCallCard toolCall={toolCall} />
+                </div>
+              ))
+            : null}
+        </div>
+      </div>
+    </div>
+  );
+};

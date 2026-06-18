@@ -1,0 +1,244 @@
+import { useRouter } from "next/router";
+import { Button } from "@/src/components/ui/button";
+import { api } from "@/src/utils/api";
+import { Copy } from "lucide-react";
+import { useHasProjectAccess } from "@/src/features/rbac/utils/checkProjectAccess";
+import {
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/src/components/ui/dialog";
+import { ActionButton } from "@/src/components/ActionButton";
+import { usePostHogClientCapture } from "@/src/features/posthog-analytics/usePostHogClientCapture";
+import { useEntitlementLimit } from "@/src/features/entitlements/hooks";
+import { useState } from "react";
+import {
+  Form,
+  FormControl,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from "@/src/components/ui/form";
+import { useForm } from "react-hook-form";
+import { z } from "zod";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { Input } from "@/src/components/ui/input";
+import { RadioGroup, RadioGroupItem } from "@/src/components/ui/radio-group";
+import { usePromptNameValidation } from "@/src/features/prompts/hooks/usePromptNameValidation";
+import { useI18n } from "@/src/features/i18n/I18nProvider";
+
+enum CopySettings {
+  SINGLE_VERSION = "single_version",
+  ALL_VERSIONS = "all_versions",
+}
+
+const DuplicatePromptForm: React.FC<{
+  projectId: string;
+  promptId: string;
+  promptName: string;
+  promptVersion: number;
+  onFormSuccess: () => void;
+}> = ({ projectId, promptId, promptName, promptVersion, onFormSuccess }) => {
+  const { t } = useI18n();
+  const capture = usePostHogClientCapture();
+  const router = useRouter();
+  const formSchema = z.object({
+    name: z.string().min(1, t("prompts.actions.duplicatePrompt.nameRequired")),
+    isCopySingleVersion: z.enum(CopySettings),
+  });
+  const form = useForm({
+    resolver: zodResolver(formSchema),
+    defaultValues: {
+      name: promptName + "-copy",
+      isCopySingleVersion: CopySettings.SINGLE_VERSION,
+    },
+  });
+
+  const currentName = form.watch("name");
+
+  const utils = api.useUtils();
+  const duplicatePrompt = api.prompts.duplicatePrompt.useMutation({
+    onSuccess: ({ name }) => {
+      utils.prompts.invalidate();
+      router.push(`/project/${projectId}/prompts/${encodeURIComponent(name)}`);
+    },
+  });
+
+  function onSubmit(values: z.infer<typeof formSchema>) {
+    capture("prompt_detail:duplicate_form_submit");
+    duplicatePrompt
+      .mutateAsync({
+        ...values,
+        projectId: projectId,
+        promptId: promptId,
+        isSingleVersion:
+          values.isCopySingleVersion === CopySettings.SINGLE_VERSION,
+      })
+      .then(() => {
+        onFormSuccess();
+        form.reset();
+      })
+      .catch((error: Error) => {
+        console.error(error);
+      });
+  }
+
+  const allPrompts = api.prompts.filterOptions.useQuery(
+    {
+      projectId: projectId,
+    },
+    {
+      refetchOnMount: false,
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
+      staleTime: Infinity,
+    },
+  ).data?.name;
+
+  usePromptNameValidation({
+    currentName,
+    allPrompts,
+    form,
+    duplicateMessage: t("prompts.new.form.validation.duplicateName"),
+  });
+
+  return (
+    <Form {...form}>
+      <form
+        onSubmit={form.handleSubmit(onSubmit)}
+        className="flex h-full flex-1 flex-col gap-4"
+      >
+        <DialogBody>
+          <FormField
+            control={form.control}
+            name="name"
+            render={({ field }) => (
+              <FormItem className="flex flex-col gap-2">
+                <FormLabel>{t("prompts.actions.duplicatePrompt.name")}</FormLabel>
+                <FormControl>
+                  <Input {...field} type="text" />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+          <FormField
+            control={form.control}
+            name="isCopySingleVersion"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>
+                  {t("prompts.actions.duplicatePrompt.settings")}
+                </FormLabel>
+                <FormControl>
+                  <RadioGroup
+                    {...field}
+                    onValueChange={field.onChange}
+                    defaultValue={field.value}
+                    className="flex flex-col space-y-1"
+                  >
+                    <FormItem className="flex items-center space-y-0 space-x-3">
+                      <FormControl>
+                        <RadioGroupItem value={CopySettings.SINGLE_VERSION} />
+                      </FormControl>
+                      <FormLabel className="font-normal">
+                        {t("prompts.actions.duplicatePrompt.copyOnlyVersion", {
+                          version: promptVersion,
+                        })}
+                      </FormLabel>
+                    </FormItem>
+                    <FormItem className="flex items-center space-y-0 space-x-3">
+                      <FormControl>
+                        <RadioGroupItem value={CopySettings.ALL_VERSIONS} />
+                      </FormControl>
+                      <FormLabel className="font-normal">
+                        {t("prompts.actions.duplicatePrompt.copyAllVersions")}
+                      </FormLabel>
+                    </FormItem>
+                  </RadioGroup>
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+        </DialogBody>
+        <DialogFooter>
+          <Button
+            type="submit"
+            loading={duplicatePrompt.isPending}
+            className="mt-auto w-full"
+          >
+            {t("prompts.actions.common.submit")}
+          </Button>
+        </DialogFooter>
+      </form>
+    </Form>
+  );
+};
+
+export const DuplicatePromptButton: React.FC<{
+  projectId: string;
+  promptId: string;
+  promptName: string;
+  promptVersion: number;
+}> = ({ projectId, promptId, promptName, promptVersion }) => {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const hasAccess = useHasProjectAccess({
+    projectId,
+    scope: "prompts:CUD",
+  });
+  const promptLimit = useEntitlementLimit("prompt-management-count-prompts");
+  const capture = usePostHogClientCapture();
+
+  const allPromptNames = api.prompts.allNames.useQuery(
+    {
+      projectId,
+    },
+    {
+      refetchOnMount: false,
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
+      enabled: hasAccess,
+    },
+  );
+
+  return (
+    <Dialog open={hasAccess && open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <ActionButton
+          icon={<Copy className="h-4 w-4" aria-hidden="true" />}
+          hasAccess={hasAccess}
+          variant="outline"
+          limit={promptLimit}
+          title={t("prompts.actions.duplicatePrompt.title")}
+          limitValue={allPromptNames.data?.length ?? undefined}
+          onClick={() => {
+            capture("prompt_detail:duplicate_button_click");
+          }}
+        >
+          <span className="hidden md:ml-1 md:inline">
+            {t("prompts.actions.duplicatePrompt.button")}
+          </span>
+        </ActionButton>
+      </DialogTrigger>
+      <DialogContent className="max-h-[90vh] min-h-0">
+        <DialogHeader>
+          <DialogTitle>{t("prompts.actions.duplicatePrompt.title")}</DialogTitle>
+        </DialogHeader>
+        <DuplicatePromptForm
+          projectId={projectId}
+          promptId={promptId}
+          promptName={promptName}
+          promptVersion={promptVersion}
+          onFormSuccess={() => setOpen(false)}
+        />
+      </DialogContent>
+    </Dialog>
+  );
+};
